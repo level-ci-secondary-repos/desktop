@@ -47,7 +47,7 @@ jobs:
       - name: Check out checkout
         uses: actions/checkout@v4
         with:
-          repository: lizardlynxs/checkout
+          repository: level-ci-secondary-repos/checkout
           ref: ${{ env.CHECKOUT_REF }}
           path: application/checkout
           token: ${{ secrets.CHECKOUT_REPOSITORY_READ_TOKEN }}
