@@ -1,0 +1,87 @@
+name: Level CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  repository_dispatch:
+    types: [level-ci-scan-request]
+  workflow_dispatch:
+
+concurrency:
+  group: level-ci-${{ github.event.client_payload.source_repository || github.repository }}-${{ github.event.client_payload.branch || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  trigger-healthcheck:
+    runs-on: ubuntu-latest
+    env:
+      APPLICATION_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+      SOURCE_REPOSITORY: ${{ github.event.client_payload.source_repository || github.repository }}
+      SOURCE_BRANCH: ${{ github.event.client_payload.branch || github.head_ref || github.ref_name }}
+      SOURCE_COMMIT: ${{ github.event.client_payload.commit_hash || github.event.pull_request.head.sha || github.sha }}
+      SOURCE_PULL_REQUEST: ${{ github.event.client_payload.pull_request || github.event.pull_request.number || '' }}
+      SECONDARY_REPOSITORY_KEY: ${{ github.event.client_payload.secondary_repository_key || '' }}
+      CHECKOUT_REF: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.commit_hash || 'main' }}
+      APPLICATION_ARTIFACT_NAME: desktop-application-${{ github.run_id }}
+    steps:
+      - name: Validate scan request
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "repository_dispatch" ]]; then
+            test "$SOURCE_REPOSITORY" = "level-ci-secondary-repos/checkout"
+            test -n "$SOURCE_BRANCH"
+            test -n "$SOURCE_COMMIT"
+            test -n "$SECONDARY_REPOSITORY_KEY"
+          fi
+
+      - name: Check out desktop
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.APPLICATION_REF }}
+          path: application
+
+      - name: Check out checkout
+        uses: actions/checkout@v4
+        with:
+          repository: lizardlynxs/checkout
+          ref: ${{ env.CHECKOUT_REF }}
+          path: application/checkout
+          token: ${{ secrets.CHECKOUT_REPOSITORY_READ_TOKEN }}
+
+      - name: Upload assembled application
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APPLICATION_ARTIFACT_NAME }}
+          path: application
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Trigger the healthcheck scan
+        env:
+          GH_TOKEN: ${{ secrets.HEALTHCHECK_DISPATCH_TOKEN }}
+        run: |
+          jq -n \
+            --arg artifact_repository "$GITHUB_REPOSITORY" \
+            --arg artifact_run_id "$GITHUB_RUN_ID" \
+            --arg artifact_name "$APPLICATION_ARTIFACT_NAME" \
+            --arg branch "$SOURCE_BRANCH" \
+            --arg commit_hash "$SOURCE_COMMIT" \
+            --arg pull_request "$SOURCE_PULL_REQUEST" \
+            --arg secondary_repository_key "$SECONDARY_REPOSITORY_KEY" \
+            '{
+              event_type: "level-ci-scan",
+              client_payload: {
+                artifact_repository: $artifact_repository,
+                artifact_run_id: $artifact_run_id,
+                artifact_name: $artifact_name,
+                branch: $branch,
+                commit_hash: $commit_hash,
+                pull_request: $pull_request,
+                secondary_repository_key: $secondary_repository_key
+              }
+            }' |
+            gh api --method POST repos/level-ci-secondary-repos/healthcheck/dispatches --input -
